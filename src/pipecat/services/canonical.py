@@ -5,7 +5,9 @@
 #
 
 import io
+import json
 import os
+import time
 import uuid
 import wave
 from datetime import datetime
@@ -14,7 +16,14 @@ from typing import Dict, List, Tuple
 import aiohttp
 from loguru import logger
 
-from pipecat.frames.frames import CancelFrame, EndFrame, Frame
+from pipecat.frames.frames import CancelFrame, EndFrame, Frame, MetricsFrame
+from pipecat.metrics.metrics import (
+    LLMUsageMetricsData,
+    MetricsData,
+    ProcessingMetricsData,
+    TTFBMetricsData,
+    TTSUsageMetricsData,
+)
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.ai_services import AIService
@@ -81,6 +90,8 @@ class CanonicalMetricsService(AIService):
         self._sub_dir = uuid.uuid4().hex
         self._context = context
         self._chunk_counter = 0  # Add a counter for naming chunks sequentially
+        self._start_time = 0
+        self._metrics_data = []
 
     async def stop(self, frame: EndFrame):
         await super().stop(frame)
@@ -90,8 +101,39 @@ class CanonicalMetricsService(AIService):
         await super().cancel(frame)
         await self._process_completion()
 
+    def _metric_type_from_frame(self, metrics_data: MetricsData):
+        if not metrics_data:
+            return None
+
+        if isinstance(metrics_data, TTFBMetricsData):
+            return "ttfb"
+        elif isinstance(metrics_data, ProcessingMetricsData):
+            return "processing"
+        elif isinstance(metrics_data, LLMUsageMetricsData):
+            return "llm_usage"
+        elif isinstance(metrics_data, TTSUsageMetricsData):
+            return "tts_usage"
+        else:
+            return "unknown"
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        if self._start_time == 0:
+            self._start_time = time.time()
+        if isinstance(frame, MetricsFrame):
+            offset = time.time() - self._start_time
+            metric_data = [
+                {
+                    **item.model_dump(),
+                    "type": self._metric_type_from_frame(item),
+                    "offset": offset,
+                    "timestamp": time.time(),
+                }
+                for item in frame.data
+            ]
+            self._metrics_data.extend(metric_data)
+            logger.debug(f"######################### Metrics Data: {metric_data}")
         await self.push_frame(frame, direction)
 
     async def process_audio_buffer(self, audio_buffer: bytes, sample_rate: int, num_channels: int):
@@ -269,7 +311,14 @@ class CanonicalMetricsService(AIService):
         }
         if self._context is not None:
             params["transcript"] = self._context.messages
+            params["metrics"] = {
+                "data": self._metrics_data,
+                "source": "pipecat",
+            }
 
+        logger.debug(
+            f"######################### POST Metrics: {json.dumps(self._metrics_data, indent=2)}"
+        )
         logger.debug(f"Completing upload for {params['filename']}")
         logger.debug(f"Slug: {params['slug']}")
         response = await self._aiohttp_session.post(

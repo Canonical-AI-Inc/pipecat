@@ -21,7 +21,9 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+from pipecat.processors.metrics.frame_processor_metrics import FrameProcessorMetrics
 from pipecat.services.canonical import CanonicalMetricsService
+from pipecat.services.deepgram import DeepgramSTTService
 from pipecat.services.elevenlabs import ElevenLabsTTSService
 from pipecat.services.openai import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
@@ -30,6 +32,26 @@ load_dotenv(override=True)
 
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
+
+
+class CanonicalMetrics(FrameProcessorMetrics):
+    def __init__(self):
+        super().__init__()
+
+    async def stop_processing_metrics(self):
+        metrics = await super().stop_processing_metrics()
+        if not metrics:
+            return None
+        logger.debug(f"######################### stop_processing_metrics: {metrics.data}")
+        return metrics
+        # await self.push_frame(MetricsFrame(data=[MetricsData(processor="CanonicalMetrics")]))
+
+    async def stop_ttfb_metrics(self):
+        metrics = await super().stop_ttfb_metrics()
+        if not metrics:
+            return None
+        logger.debug(f"######################### stop_ttfb_metrics: {metrics.data}")
+        return metrics
 
 
 async def main():
@@ -47,7 +69,7 @@ async def main():
                 vad_enabled=True,
                 vad_audio_passthrough=True,
                 vad_analyzer=SileroVADAnalyzer(),
-                transcription_enabled=True,
+                # transcription_enabled=False,
                 #
                 # Spanish
                 #
@@ -72,7 +94,15 @@ async def main():
             # voice_id="gD1IexrzCvsXPHUuT0s3",
         )
 
-        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+        sst = DeepgramSTTService(
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
+            audio_passthrough=True,
+        )
+
+        llm = OpenAILLMService(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            model="gpt-4o",
+        )
 
         messages = [
             {
@@ -100,6 +130,7 @@ async def main():
         audio_buffer_processor = AudioBufferProcessor(num_channels=2, buffer_size=1000000)
         canonical = CanonicalMetricsService(
             aiohttp_session=session,
+            api_url=os.getenv("CANONICAL_API_URL"),
             api_key=os.getenv("CANONICAL_API_KEY"),
             call_id=str(uuid.uuid4()),
             assistant="pipecat-chatbot",
@@ -109,6 +140,7 @@ async def main():
         pipeline = Pipeline(
             [
                 transport.input(),  # microphone
+                sst,
                 context_aggregator.user(),
                 llm,
                 tts,
@@ -119,7 +151,15 @@ async def main():
             ]
         )
 
-        task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+        task = PipelineTask(
+            pipeline,
+            params=PipelineParams(
+                allow_interruptions=True,
+                enable_usage_metrics=True,
+                enable_metrics=True,
+                send_initial_empty_metrics=False,
+            ),
+        )
 
         @audio_buffer_processor.event_handler("on_audio_data")
         async def on_audio_data(
