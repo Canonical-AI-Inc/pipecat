@@ -28,9 +28,9 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.services.cartesia import CartesiaTTSService
-from pipecat.services.deepgram import DeepgramSTTService
-from pipecat.services.openai import OpenAILLMService
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.network.websocket_client import (
     WebsocketClientParams,
     WebsocketClientTransport,
@@ -92,13 +92,11 @@ async def run_client(client_name: str, server_url: str, duration_secs: int):
             audio_out_enabled=True,
             add_wav_header=False,
             serializer=TwilioFrameSerializer(stream_sid),
-            vad_enabled=True,
             vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=1.5)),
-            vad_audio_passthrough=True,
         ),
     )
 
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
     # We let the audio passthrough so we can record the conversation.
     stt = DeepgramSTTService(

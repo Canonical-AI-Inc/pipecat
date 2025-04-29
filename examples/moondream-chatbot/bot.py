@@ -23,7 +23,6 @@ from pipecat.frames.frames import (
     OutputImageRawFrame,
     SpriteFrame,
     TextFrame,
-    UserImageRawFrame,
     UserImageRequestFrame,
 )
 from pipecat.pipeline.parallel_pipeline import ParallelPipeline
@@ -34,9 +33,9 @@ from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.aggregators.sentence import SentenceAggregator
 from pipecat.processors.aggregators.vision_image_frame import VisionImageFrameAggregator
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.cartesia import CartesiaTTSService
-from pipecat.services.moondream import MoondreamService
-from pipecat.services.openai import OpenAILLMService
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.moondream.vision import MoondreamService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 
 load_dotenv(override=True)
@@ -142,12 +141,12 @@ async def main():
             token,
             "Chatbot",
             DailyParams(
+                audio_in_enabled=True,
                 audio_out_enabled=True,
-                camera_out_enabled=True,
-                camera_out_width=1024,
-                camera_out_height=576,
+                video_out_enabled=True,
+                video_out_width=1024,
+                video_out_height=576,
                 transcription_enabled=True,
-                vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
             ),
         )
@@ -157,7 +156,7 @@ async def main():
             voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
         )
 
-        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
         ta = TalkingAnimation()
 

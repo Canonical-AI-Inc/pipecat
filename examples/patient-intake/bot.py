@@ -19,10 +19,12 @@ from pipecat.frames.frames import OutputAudioRawFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.processors.logger import FrameLogger
-from pipecat.services.cartesia import CartesiaTTSService
-from pipecat.services.openai import OpenAILLMContext, OpenAILLMContextFrame, OpenAILLMService
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.llm_service import FunctionCallParams
+from pipecat.services.openai.llm import OpenAILLMContext, OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 
 load_dotenv(override=True)
@@ -83,11 +85,9 @@ class IntakeProcessor:
             ]
         )
 
-    async def verify_birthday(
-        self, function_name, tool_call_id, args, llm, context, result_callback
-    ):
-        if args["birthday"] == "1983-01-01":
-            context.set_tools(
+    async def verify_birthday(self, params: FunctionCallParams):
+        if params.arguments["birthday"] == "1983-01-01":
+            params.context.set_tools(
                 [
                     {
                         "type": "function",
@@ -123,7 +123,7 @@ class IntakeProcessor:
             # await llm.push_frame(sounds["ding2.wav"], FrameDirection.DOWNSTREAM)
             # We don't need the function call in the context, so just return a new
             # system message and let the framework re-prompt
-            await result_callback(
+            await params.result_callback(
                 [
                     {
                         "role": "system",
@@ -133,7 +133,7 @@ class IntakeProcessor:
             )
         else:
             # The user provided an incorrect birthday; ask them to try again
-            await result_callback(
+            await params.result_callback(
                 [
                     {
                         "role": "system",
@@ -142,10 +142,10 @@ class IntakeProcessor:
                 ]
             )
 
-    async def start_prescriptions(self, function_name, llm, context):
+    async def list_prescriptions(self, params: FunctionCallParams):
         print(f"!!! doing start prescriptions")
         # Move on to allergies
-        context.set_tools(
+        params.context.set_tools(
             [
                 {
                     "type": "function",
@@ -173,20 +173,23 @@ class IntakeProcessor:
                 }
             ]
         )
-        context.add_message(
+        params.context.add_message(
             {
                 "role": "system",
                 "content": "Next, ask the user if they have any allergies. Once they have listed their allergies or confirmed they don't have any, call the list_allergies function.",
             }
         )
         print(f"!!! about to await llm process frame in start prescrpitions")
-        await llm.queue_frame(OpenAILLMContextFrame(context), FrameDirection.DOWNSTREAM)
+        await params.llm.queue_frame(
+            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
+        )
         print(f"!!! past await process frame in start prescriptions")
+        await self.save_data(params.arguments, params.result_callback)
 
-    async def start_allergies(self, function_name, llm, context):
-        print("!!! doing start allergies")
+    async def list_allergies(self, params: FunctionCallParams):
+        print("!!! doing list allergies")
         # Move on to conditions
-        context.set_tools(
+        params.context.set_tools(
             [
                 {
                     "type": "function",
@@ -214,18 +217,21 @@ class IntakeProcessor:
                 },
             ]
         )
-        context.add_message(
+        params.context.add_message(
             {
                 "role": "system",
                 "content": "Now ask the user if they have any medical conditions the doctor should know about. Once they've answered the question, call the list_conditions function.",
             }
         )
-        await llm.queue_frame(OpenAILLMContextFrame(context), FrameDirection.DOWNSTREAM)
+        await params.llm.queue_frame(
+            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
+        )
+        await self.save_data(params.arguments, params.result_callback)
 
-    async def start_conditions(self, function_name, llm, context):
+    async def list_conditions(self, params: FunctionCallParams):
         print("!!! doing start conditions")
         # Move on to visit reasons
-        context.set_tools(
+        params.context.set_tools(
             [
                 {
                     "type": "function",
@@ -253,24 +259,30 @@ class IntakeProcessor:
                 }
             ]
         )
-        context.add_message(
+        params.context.add_message(
             {
                 "role": "system",
                 "content": "Finally, ask the user the reason for their doctor visit today. Once they answer, call the list_visit_reasons function.",
             }
         )
-        await llm.queue_frame(OpenAILLMContextFrame(context), FrameDirection.DOWNSTREAM)
+        await params.llm.queue_frame(
+            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
+        )
+        await self.save_data(params.arguments, params.result_callback)
 
-    async def start_visit_reasons(self, function_name, llm, context):
+    async def list_visit_reasons(self, params: FunctionCallParams):
         print("!!! doing start visit reasons")
         # move to finish call
-        context.set_tools([])
-        context.add_message(
+        params.context.set_tools([])
+        params.context.add_message(
             {"role": "system", "content": "Now, thank the user and end the conversation."}
         )
-        await llm.queue_frame(OpenAILLMContextFrame(context), FrameDirection.DOWNSTREAM)
+        await params.llm.queue_frame(
+            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
+        )
+        await self.save_data(params.arguments, params.result_callback)
 
-    async def save_data(self, function_name, tool_call_id, args, llm, context, result_callback):
+    async def save_data(self, args, result_callback):
         logger.info(f"!!! Saving data: {args}")
         # Since this is supposed to be "async", returning None from the callback
         # will prevent adding anything to context or re-prompting
@@ -286,8 +298,8 @@ async def main():
             token,
             "Chatbot",
             DailyParams(
+                audio_in_enabled=True,
                 audio_out_enabled=True,
-                vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
                 transcription_enabled=True,
                 #
@@ -311,7 +323,7 @@ async def main():
         #     voice_id="846d6cb0-2301-48b6-9683-48f5618ea2f6",  # Spanish-speaking Lady
         # )
 
-        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+        llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
         messages = []
         context = OpenAILLMContext(messages=messages)
@@ -319,18 +331,10 @@ async def main():
 
         intake = IntakeProcessor(context)
         llm.register_function("verify_birthday", intake.verify_birthday)
-        llm.register_function(
-            "list_prescriptions", intake.save_data, start_callback=intake.start_prescriptions
-        )
-        llm.register_function(
-            "list_allergies", intake.save_data, start_callback=intake.start_allergies
-        )
-        llm.register_function(
-            "list_conditions", intake.save_data, start_callback=intake.start_conditions
-        )
-        llm.register_function(
-            "list_visit_reasons", intake.save_data, start_callback=intake.start_visit_reasons
-        )
+        llm.register_function("list_prescriptions", intake.list_prescriptions)
+        llm.register_function("list_allergies", intake.list_allergies)
+        llm.register_function("list_conditions", intake.list_conditions)
+        llm.register_function("list_visit_reasons", intake.list_visit_reasons)
 
         fl = FrameLogger("LLM Output")
 

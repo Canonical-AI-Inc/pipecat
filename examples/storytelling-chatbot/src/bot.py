@@ -22,8 +22,9 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.services.elevenlabs import ElevenLabsTTSService
-from pipecat.services.google import GoogleImageGenService, GoogleLLMService
+from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+from pipecat.services.google.image import GoogleImageGenService
+from pipecat.services.google.llm import GoogleLLMService
 from pipecat.transports.services.daily import (
     DailyParams,
     DailyTransport,
@@ -48,13 +49,13 @@ async def main(room_url, token=None):
             token,
             "Storytelling Bot",
             DailyParams(
+                audio_in_enabled=True,
                 audio_out_enabled=True,
-                camera_out_enabled=True,
-                camera_out_width=1024,
-                camera_out_height=1024,
+                video_out_enabled=True,
+                video_out_width=1024,
+                video_out_height=1024,
                 transcription_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
-                vad_enabled=True,
             ),
         )
 

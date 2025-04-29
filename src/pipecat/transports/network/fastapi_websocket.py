@@ -61,6 +61,10 @@ class FastAPIWebsocketClient:
         self._closing = False
         self._is_binary = is_binary
         self._callbacks = callbacks
+        self._leave_counter = 0
+
+    async def setup(self, _: StartFrame):
+        self._leave_counter += 1
 
     def receive(self) -> typing.AsyncIterator[bytes | str]:
         return self._websocket.iter_bytes() if self._is_binary else self._websocket.iter_text()
@@ -73,6 +77,10 @@ class FastAPIWebsocketClient:
                 await self._websocket.send_text(data)
 
     async def disconnect(self):
+        self._leave_counter -= 1
+        if self._leave_counter > 0:
+            return
+
         if self.is_connected and not self.is_closing:
             self._closing = True
             await self._websocket.close()
@@ -102,11 +110,13 @@ class FastAPIWebsocketClient:
 class FastAPIWebsocketInputTransport(BaseInputTransport):
     def __init__(
         self,
+        transport: BaseTransport,
         client: FastAPIWebsocketClient,
         params: FastAPIWebsocketParams,
         **kwargs,
     ):
         super().__init__(params, **kwargs)
+        self._transport = transport
         self._client = client
         self._params = params
         self._receive_task = None
@@ -114,6 +124,7 @@ class FastAPIWebsocketInputTransport(BaseInputTransport):
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
+        await self._client.setup(frame)
         await self._params.serializer.setup(frame)
         if not self._monitor_websocket_task and self._params.session_timeout:
             self._monitor_websocket_task = self.create_task(self._monitor_websocket())
@@ -138,6 +149,10 @@ class FastAPIWebsocketInputTransport(BaseInputTransport):
         await super().cancel(frame)
         await self._stop_tasks()
         await self._client.disconnect()
+
+    async def cleanup(self):
+        await super().cleanup()
+        await self._transport.cleanup()
 
     async def _receive_messages(self):
         try:
@@ -165,11 +180,14 @@ class FastAPIWebsocketInputTransport(BaseInputTransport):
 class FastAPIWebsocketOutputTransport(BaseOutputTransport):
     def __init__(
         self,
+        transport: BaseTransport,
         client: FastAPIWebsocketClient,
         params: FastAPIWebsocketParams,
         **kwargs,
     ):
         super().__init__(params, **kwargs)
+
+        self._transport = transport
         self._client = client
         self._params = params
 
@@ -183,16 +201,23 @@ class FastAPIWebsocketOutputTransport(BaseOutputTransport):
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
+        await self._client.setup(frame)
         await self._params.serializer.setup(frame)
         self._send_interval = (self._audio_chunk_size / self.sample_rate) / 2
 
     async def stop(self, frame: EndFrame):
         await super().stop(frame)
+        await self._write_frame(frame)
         await self._client.disconnect()
 
     async def cancel(self, frame: CancelFrame):
         await super().cancel(frame)
+        await self._write_frame(frame)
         await self._client.disconnect()
+
+    async def cleanup(self):
+        await super().cleanup()
+        await self._transport.cleanup()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -266,6 +291,7 @@ class FastAPIWebsocketTransport(BaseTransport):
         output_name: Optional[str] = None,
     ):
         super().__init__(input_name=input_name, output_name=output_name)
+
         self._params = params
 
         self._callbacks = FastAPIWebsocketCallbacks(
@@ -278,10 +304,10 @@ class FastAPIWebsocketTransport(BaseTransport):
         self._client = FastAPIWebsocketClient(websocket, is_binary, self._callbacks)
 
         self._input = FastAPIWebsocketInputTransport(
-            self._client, self._params, name=self._input_name
+            self, self._client, self._params, name=self._input_name
         )
         self._output = FastAPIWebsocketOutputTransport(
-            self._client, self._params, name=self._output_name
+            self, self._client, self._params, name=self._output_name
         )
 
         # Register supported handlers. The user will only be able to register
